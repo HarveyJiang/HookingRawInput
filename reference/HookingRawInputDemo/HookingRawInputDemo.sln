@@ -1,0 +1,21 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Express 2012 for Windows Desktop
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "HookingRawInputDemo", "HookingRawInputDemo\HookingRawInputDemo.vcxproj", "{CE9269F7-BDAE-47B0-903B-8A0169400551}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "HookingRawInputDemoDLL", "HookingRawInputDemoDLL\HookingRawInputDemoDLL.vcxproj", "{CC8D040D-AC86-4CA1-8AC0-2C04DC22DECB}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{CE9269F7-BDAE-47B0-903B-8A0169400551}.Debug|x64.ActiveCfg = Debug|x64
+		{CE9269F7-BDAE-47B0-903B-8A0169400551}.Debug|x64.Build.0 = Debug|x64
+		{CC8D040D-AC86-4CA1-8AC0-2C04DC22DECB}.Debug|x64.ActiveCfg = Debug|x64
+		{CC8D040D-AC86-4CA1-8AC0-2C04DC22DECB}.Debug|x64.Build.0 = Debug|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

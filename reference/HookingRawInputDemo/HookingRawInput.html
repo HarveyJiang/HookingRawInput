@@ -1,0 +1,496 @@
+﻿<!DOCTYPE html>
+
+<html>
+<head>
+<title>Combining Raw Input and keyboard Hook to selectively block input from multiple keyboards</title>
+<meta name="description" content="How to combine the Raw Input and keyboard Hook APIs, and use them to selectively block input from only some keyboards.">
+<meta name="author" content="Vít Blecha">
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+</head>
+
+<body style="width: 70%; margin-left: auto; margin-right: auto;">
+
+<h1>Combining Raw Input and keyboard Hook to selectively block input from multiple keyboards</h1>
+
+<p>By Vít Blecha (sethest@gmail.com), 2014</p>
+
+<h2>Contents</h2>
+
+<ul>
+	<li><a href="#Chap1">Introduction</a></li>
+	<li><a href="#Chap2">Background</a></li>
+	<li><a href="#Chap3">Using the code</a></li>
+	<li><a href="#Chap4">Main concept</a>
+		<ul>
+			<li><a href="#Chap4-1">Basic setup</a></li>
+			<li><a href="#Chap4-2">Communication</a></li>
+			<li><a href="#Chap4-3">Decision-making</a></li>
+		</ul></li>
+	<li><a href="#Chap5">The most important countermeasures</a>
+		<ul>
+			<li><a href="#Chap5-1">Raw Input messages buffering</a></li>
+			<li><a href="#Chap5-2">Waiting for the Raw Input message</a></li>
+			<li><a href="#Chap5-3">Hook message is missing</a></li>
+			<li><a href="#Chap5-4">Raw Input message is missing</a></li>
+		</ul></li>
+	<li><a href="#Chap6">Yet more oddities</a>
+		<ul>
+			<li><a href="#Chap6-1">&quot;AltGr&quot; problem</a></li>
+			<li><a href="#Chap6-2">Senseless Hook messages</a></li>
+			<li><a href="#Chap6-3">Multiplied Hook messages</a></li>
+			<li><a href="#Chap6-4">Keys for system shortcuts</a></li>
+		</ul></li>
+	<li><a href="#Chap7">Conclusion</a></li>
+	<li><a href="#Chap8">History</a></li>
+	<li><a href="#Chap9">References</a></li>
+</ul>
+
+<h2><a class="anchor" title="Chap1" name="Chap1" id="Chap1">Introduction</a></h2>
+
+<p>When you connect more than one keyboard to your pc, you might get some interesting ideas what to do with them. Perhaps you could use one for standard typing, and the other one for some special tasks. When you delve deeper into the multiple keyboard setup, you might find yourself asking a&nbsp;question, &quot;Can I&nbsp;block the key input for running application based on what keyboard was used to generate it?&quot;. Let's say you have Notepad opened, when you press &quot;<strong>a</strong>&quot;&nbsp;key on the keyboard 1, you want the &quot;<strong>a</strong>&quot;&nbsp;letter to be written into the document, but when you press the &quot;<strong>a</strong>&quot;&nbsp;key on the keyboard 2, you want some task to be performed in the background, and Notepad not even notice the keystroke. When I&nbsp;encountered this problem, I&nbsp;had some troubles finding the answer and solution. Therefore I&nbsp;decided to write this article, to make it easier for you, if you ever happen to ask the same question. The article will assume some knowledge of the Windows programming, but I&nbsp;will try to point you to relevant resources, so you should be able to learn everything you need.</p>
+
+<h2><a class="anchor" title="Chap2" name="Chap2" id="Chap2">Background</a></h2>
+
+<p>I&nbsp;had to solve this problem when I&nbsp;wanted to have a&nbsp;custom hotkey manager for multiple keyboards. Basic idea was to have a&nbsp;standard keyboard for standard input, and one small numeric keyboard that would be used for hotkeys. The hotkeys should be configured for various applications, so I&nbsp;can have one key to perform an action in one application, and the same key to perform different action in another application. First I&nbsp;looked around for existing solutions, but I&nbsp;couldn't find any that would meet all my requirements. &quot;<a title="http://www.autohotkey.com/" href="http://www.autohotkey.com/">AutoHotkey</a>&quot; is unable to differentiate between multiple keyboards on its own. &quot;<a title="http://www.hidmacros.eu/" href="http://www.hidmacros.eu/">HID&nbsp;macros</a>&quot; doesn't allow application specific hotkey setup. It is possible to combine the two and use both at the same time, but I&nbsp;didn't like that solution very much. I&nbsp;came across some managers, that seemed they would do the job, but they were all licensed software. So I&nbsp;decided to write my own.</p>
+
+<p>Simply put, the problem at hand is to decide whether to block a&nbsp;key input based on the device that generated the input in the managing application, and then block it successfully in the running application that has user focus. When you want to work with keyboard input on Windows, you have basicly two choices: use some custom driver for the device, or use one of the Windows' APIs for working with keyboard input. There are two APIs to be considered: Raw Input and keyboard Hooks.</p>
+
+<ul>
+	<li><strong>Custom device driver</strong>: So far I&nbsp;had no experience with writing my own driver for a&nbsp;device. I&nbsp;walked through some documentation and code samples, and it seemed pretty complicated for my project. Also it would have some negative consequences. The manager would require administrator priviliges to install the driver, so that would restrict portability. And the users might feel uncomfortable installing such driver. The driver might also have to be signed by certified authority (I'm not completely sure if this is true, since I&nbsp;haven't looked deeper into the issue).<br />Another option would be to use a&nbsp;custom driver that provides a&nbsp;programming interface for me, so I&nbsp;wouldn't have to write my own driver. &quot;<a title="http://oblita.com/interception.html" href="http://oblita.com/interception.html">Interception library</a>&quot; seems to offer such option. But some of the negative aspects of custom driver would hold still (administrator rights requirement, user unease), plus there would be some more. The source code of the library itself is available, however sources of the driver are not, so I&nbsp;wouldn't have full control over the product I provide to the potential users.</li>
+	
+	<li><strong>Raw Input</strong>: This interface provides more complex way to accept input from various devices, including the keyboard, than the standard Windows keyboard input messages. Most notably, it is possible to identify on what keyboard a&nbsp;key was struck, which is impossible using the standard input messages. Raw Input is capable of monitoring keyboard events system wide, so the decision part of the problem could be solved with it. Unfortunately, the second part can be not. At least I&nbsp;wasn't able to find any way how to block the input from reaching its destination window with Raw Input API.</li>
+	
+	<li><strong>Keyboard Hooks</strong>: Windows Hooks are mechanisms that allow an application to intercept system messages, such as keyboard events. When set up correctly, they work system wide. They even allow an application to modify or stop the propagation of the appropriate message. That means, that Hook can be used to block the keystroke. The problem is, there is no way how to generally identify the keyboard on which the key was struck.</li>
+</ul>
+
+<p>As you can see, unless you want to use some custom device driver, there is no single API that would allow you to solve the whole problem. &quot;Can I&nbsp;combine the two APIs to make it work?&quot;, you might ask at this point. And as it turns out, yes, you can. Unfortunately, documentation of the interaction is basicly non-existent, and it is very counter-intuitive. I&nbsp;hope, this article will shed some light on the matter for anyone struggling with the issue.</p>
+
+<h2><a class="anchor" title="Chap3" name="Chap3" id="Chap3">Using the code</a></h2>
+
+<p>As I&nbsp;mentioned earlier, I&nbsp;will assume some level of the Windows programming knowledge on your part. I&nbsp;don't want to go into much detail regarding every single API setup, because I&nbsp;feel that these things are covered already enough. If you are unfamiliar with either API, I&nbsp;would recommend walking through the documentation to you. For Windows messages system in general: &quot;<a title="http://msdn.microsoft.com/en-us/library/windows/desktop/ms644927.aspx" href="http://msdn.microsoft.com/en-us/library/windows/desktop/ms644927.aspx">About Messages and Message Queues</a>&quot; [<a href="#Ref1">1</a>]; for the Raw Input: &quot;<a title="http://msdn.microsoft.com/en-us/library/windows/desktop/ms645543.aspx" href="http://msdn.microsoft.com/en-us/library/windows/desktop/ms645543.aspx">About Raw Input</a>&quot; [<a href="#Ref2">2</a>]; for Hooks: &quot;<a title="http://msdn.microsoft.com/en-us/library/windows/desktop/ms644959.aspx" href="http://msdn.microsoft.com/en-us/library/windows/desktop/ms644959.aspx">Hooks Overview</a>&quot; [<a href="#Ref3">3</a>].</p>
+
+<p>I&nbsp;use C++ in my project, but I&nbsp;believe the code can be adapted for .NET with some effort. For the sake of simplicity, I&nbsp;will omit any error checking for system calls, allocations, etc., unless they are part of the problem itself. The demo project uses a&nbsp;simple debugging output, just for the demonstration purposes, and is aiming only to showcase the main idea. It can be definitely structured better. Also the code samples are meant to include only the most important things. There won't be any complete functions or modules, that you would just copy-paste (for that you can download the attached demo project), but I&nbsp;will always point out the function and file, so you can get an idea, where the particular code belongs. These samples should really just help you to understand the problem.</p>
+
+<p>I&nbsp;have tested the code only on Windows 7 (64 bit) so far. It is possible that on other systems the described behaviour of the APIs might differ.</p>
+
+<h2><a class="anchor" title="Chap4" name="Chap4" id="Chap4">Main Concept</a></h2>
+
+<p>I&nbsp;found this concept of combining Raw Input with Hooks thanks to a&nbsp;comment from <strong>Petr Medek</strong>, author of the &quot;<a title="http://www.hidmacros.eu/" href="http://www.hidmacros.eu/">HID&nbsp;macros</a>&quot; [<a href="#Ref4">4</a>], here on CodeProject. He guided me to the basic idea of this solution. So I&nbsp;must give credit where it is due; huge thanks to Petr! I&nbsp;built my project on the basic idea and went through some additional pitfalls. With Petr's permission I&nbsp;will describe to you the whole concept with all the complications I&nbsp;encountered.</p>
+
+<p>To remind you, our goal is to intercept keystrokes, decide whether to block them or pass them to the active application; the decision is based on which keyboard was used. We will use Raw Input for the decision-making and Hook for the input blocking. So let's get into it!</p>
+
+<h3><a class="anchor" title="Chap4-1" name="Chap4-1" id="Chap4-1">Basic setup</a></h3>
+
+<p>In order to use them, we will first need to set up both APIs in our application. For the Raw Input, there is no hidden catch, so we simply register for receiving keyboard inputs globally (by specifying <code>RIDEV_INPUTSINK</code> flag).</p>
+
+<pre lang="C++" style="width: 716px;">// --- InitInstance (HookingRawInputDemo.cpp) ---
+// Register for receiving Raw Input for keyboards
+RAWINPUTDEVICE rawInputDevice[1];
+rawInputDevice[0].usUsagePage = 1;
+rawInputDevice[0].usUsage = 6;
+rawInputDevice[0].dwFlags = RIDEV_INPUTSINK;
+rawInputDevice[0].hwndTarget = hWnd;
+RegisterRawInputDevices (rawInputDevice, 1, sizeof (rawInputDevice[0]));</pre>
+
+<p>As for the processing of the <code>Raw Input messages</code>, let's just check that we are receiving them properly now. We will keep track of the virtual key code of the key and whether it is being pressed or released.</p>
+
+<pre lang="C++" style="width: 716px;">// --- WndProc (HookingRawInputDemo.cpp) ---
+// Raw Input Message
+case WM_INPUT:
+{
+	// ...
+	// Get the virtual key code of the key and report it
+	USHORT virtualKeyCode = raw->data.keyboard.VKey;
+	USHORT keyPressed = raw->data.keyboard.Flags & RI_KEY_BREAK ? 0 : 1;
+	WCHAR text[128];
+	swprintf_s (text, 128, L"Raw Input: %X (%d)\n", virtualKeyCode, keyPressed);
+	OutputDebugString (text);
+	// ...
+}</pre>
+
+<p>Regarding the Hook, the things get a&nbsp;little tricky already. When I&nbsp;was first experimenting with the combination of the APIs, I&nbsp;tried to use a&nbsp;global Low Level Keyboard Hook (<code>WH_KEYBOARD_LL</code>). The problem is, when we use the Low Level Keyboard Hook to block some input (we stop the progress of the message), Windows won't generate the Raw Input event, meaning no application will get the appropriate <code>Raw Input message</code> (<code>WM_INPUT</code>). Because of that, we can't use Low Level Keyboard Hook, but we have to use a&nbsp;standard Keyboard Hook (<code>WH_KEYBOARD</code>), which is a&nbsp;bit harder to set up. When we want to use this Hook globally, i.e. for any running application, its procedure has to be in a&nbsp;separate DLL module. If you don't know how to set up a&nbsp;Hook in a&nbsp;DLL module, one of these articles should help you out: &quot;<a title="http://www.codeproject.com/Articles/1037/Hooks-and-DLLs" href="http://www.codeproject.com/Articles/1037/Hooks-and-DLLs">Hooks and DLLs</a>&quot; [<a href="#Ref5">5</a>], &quot;<a title="http://www.codeproject.com/Articles/67091/Mouse-and-KeyBoard-Hooking-utility-with-VC" href="http://www.codeproject.com/Articles/67091/Mouse-and-KeyBoard-Hooking-utility-with-VC">Mouse and KeyBoard Hooking utility with VC++</a>&quot; [<a href="#Ref6">6</a>]. The Hook should be registered like this:</p>
+
+<pre lang="C++" style="width: 716px;">// --- InstallHook (HookingRawInputDemoDLL.cpp) ---
+// Register keyboard Hook
+hookHandle = SetWindowsHookEx (WH_KEYBOARD, (HOOKPROC)KeyboardProc, instanceHandle, 0);</pre>
+
+<p>Let's have the Hook procedure do nothing with the input for now, just check it as with the Raw Input, and pass it along the Hook chain.</p>
+
+<pre lang="C++" style="width: 716px;">// --- KeyboardProc (HookingRawInputDemoDLL.cpp) ---
+// Get the virtual key code of the key and report it
+USHORT virtualKeyCode = (USHORT)wParam;
+USHORT keyPressed = lParam & 0x80000000 ? 0 : 1;
+WCHAR text[128];
+swprintf_s (text, 128, L"Hook: %X (%d)\n", virtualKeyCode, keyPressed);
+OutputDebugString (text);
+
+return CallNextHookEx (hookHandle, code, wParam, lParam);</pre>
+
+<p>Now when you run the application, you should get proper notifications for both Raw Input and for Hook as you type something in another window.</p>
+
+<h3><a class="anchor" title="Chap4-2" name="Chap4-2" id="Chap4-2">Communication</a></h3>
+
+<p>We expect to use the Hook for the input blocking, and the Raw Input for the decision-making. But they are in separate modules, therefore we will use the Windows messaging system to take care of the communication between the two. The communication will be quite simple. We will send a&nbsp;message from the Hook procedure to the main window, along with the original <code>Hook message</code> parameters. Main window will decide what to do with the input. If the Hook is supposed to block the input, the return value of the message call is 1; 0 otherwise. We can try it out, without making any reasonable decision yet.</p>
+
+<pre lang="C++" style="width: 716px;">// --- KeyboardProc (HookingRawInputDemoDLL.cpp) ---
+// Report the event to the main window. If the return value is 1, block the input; otherwise pass it
+// along the Hook chain
+if (SendMessage (hwndServer, WM_HOOK, wParam, lParam))
+{
+	return 1;
+}
+
+// --- WndProc (HookingRawInputDemo.cpp) ---
+// Message from Hooking DLL
+case WM_HOOK:
+{
+	return 0;
+}</pre>
+
+<p>Notice it is important to use <code>SendMessage</code>, rather than the <code>PostMessage</code>, because we want to wait for the decision.</p>
+
+<h3><a class="anchor" title="Chap4-3" name="Chap4-3" id="Chap4-3">Decision-making</a></h3>
+
+<p>Now that we established the communication, we can finally get something done. Let's take a&nbsp;look what are we dealing with. The most simple situation, when there are just a&nbsp;few single keystrokes, should look like this (the first number is hexadecimal virtual key code of the key, and the number in the brackets says whether the key is being pressed):</p>
+
+<pre lang="text" style="width: 716px;">Raw Input: 67 (1)
+Hook: 67 (1)
+Raw Input: 67 (0)
+Hook: 67 (0)
+Raw Input: 63 (1)
+Hook: 63 (1)
+Raw Input: 63 (0)
+Hook: 63 (0)</pre>
+
+<p>For every key press, we will get <code>Raw Input message</code> first, followed by its <code>Hook message</code>. I&nbsp;can tell you in advance, that things can get a&nbsp;bit messy when you type faster or use some special keys, but we will deal with that later, for now we will consider just this clean case. Bacause of that, whenever we get some <code>Raw Input message</code>, we can decide what to do with the input (based on the keyboard that was used), remember the decision, and when we receive <code>Hook message</code>, we will simply reply with the decision we made.</p>
+
+<p>Let's improve our Raw Input processing first (that is where the decisions are made) to incorporate keyboard identification. Our decision will be quite simple, if the key struck was a&nbsp;&quot;<strong>7</strong>&quot;&nbsp;on the numeric keyboard, we will block it. All other keystrokes will be just passed.</p>
+
+<pre lang="C++" style="width: 716px;">// --- WndProc (HookingRawInputDemo.cpp) ---
+// Raw Input Message
+case WM_INPUT:
+{
+	// ...
+	// Prepare string buffer for the device name
+	GetRawInputDeviceInfo (raw->header.hDevice, RIDI_DEVICENAME, NULL, &bufferSize);
+	WCHAR* stringBuffer = new WCHAR[bufferSize];
+
+	// Load the device name into the buffer
+	GetRawInputDeviceInfo (raw->header.hDevice, RIDI_DEVICENAME, stringBuffer, &bufferSize);
+
+	// Check whether the key struck was a "7" on a numeric keyboard
+	if (virtualKeyCode == 0x67 && wcscmp (stringBuffer, numericKeyboardDeviceName) == 0)
+	{
+		blockNextHook = TRUE;
+	}
+	else
+	{
+		blockNextHook = FALSE;
+	}
+	// ...
+}</pre>
+
+<p>The only remaining thing to do is to use the decision in Hook event processing.</p>
+
+<pre lang="C++" style="width: 716px;">// --- WndProc (HookingRawInputDemo.cpp) ---
+// Message from Hooking DLL
+case WM_HOOK:
+{
+	// ...
+	// If next Hook message is supposed to be blocked, return 1
+	if (blockNextHook)
+	{
+		swprintf_s (text, 128, L"Keyboard event: %X (%d) is being blocked!\n",
+		            virtualKeyCode, keyPressed);
+		OutputDebugString (text);
+		return 1;
+	}
+	// ...
+}</pre>
+
+<p>And here we have it! Our application, that blocks keyboard input based on what keyboard was used, is working. And the main idea of the Raw Input and keyboard Hook combination should be clear to you.</p>
+
+<h2><a class="anchor" title="Chap5" name="Chap5" id="Chap5">The most important countermeasures</a></h2>
+
+<p>Unfortunately, the things tend to get a&nbsp;bit more complicated in a&nbsp;real world. There are many occasions, where we won't get nice ordered sequence of <code>Raw Input</code> and <code>Hook messages</code>, as we assumed earlier. And we will have to deal with these situations. Let's take a&nbsp;look at these complications, one at a&nbsp;time. You might wonder something like, &quot;What if this...? And could this...?&quot;, when you read through the various situations. And you are probably right, things can get much more messy than a&nbsp;single section below would suggest. I'm trying to keep things as simple as possible, although we will have to rework some solutions because of that. I&nbsp;think this is the easiest way to comprehend the whole issue. And I&nbsp;believe it will be clear to you in the end.</p>
+
+<h3><a class="anchor" title="Chap5-1" name="Chap5-1" id="Chap5-1">Raw Input messages buffering</a></h3>
+
+<p>When you start typing real fast (or like smash your keyboard with fingers), it is quite common, that you will get multiple <code>Raw Input messages</code> in a&nbsp;sequence, and only after that the matching <code>Hook messages</code> arrive. For example like this:</p>
+
+<pre lang="text" style="width: 716px;">Raw Input: 44 (1)
+Hook: 44 (1)
+Raw Input: 4B (1)
+Raw Input: 53 (1)
+Hook: 4B (1)
+Hook: 53 (1)</pre>
+
+<p>If we would settle for the simple solution we have so far, our application wouldn't work correctly, because it would block the input of &quot;<strong>k</strong>&quot;&nbsp;key (<strong>4B</strong>) and &quot;<strong>s</strong>&quot;&nbsp;key (<strong>53</strong>) both based on a&nbsp;single decision made for input of the &quot;<strong>s</strong>&quot;&nbsp;key (<strong>53</strong>), since we remember only the very last decision we made.</p>
+
+<p>Therefore we have to remember more than one decision and use them in order. To achieve this, we will use some FIFO (first-in first-out) container. I&nbsp;choose to use a&nbsp;simple <code>Deque</code>. As we are receiving the <code>Raw Input messages</code>, we will decide what to do with the input, and push the decision into the <code>Deque</code>. When we receive <code>Hook message</code>, we will just pop the decision.</p>
+
+<pre lang="C++" style="width: 716px;">// --- WndProc (HookingRawInputDemo.cpp) ---
+// Raw Input Message
+case WM_INPUT:
+{
+	// ...
+	// Check whether the key struck was a "7" on a numeric keyboard, and remember the decision
+	// whether to block the input
+	if (virtualKeyCode == 0x67 && wcscmp (stringBuffer, numericKeyboardDeviceName) == 0)
+	{
+		decisionBuffer.push_back (TRUE);
+	}
+	else
+	{
+		decisionBuffer.push_back (FALSE);
+	}
+	// ...
+}</pre>
+
+<pre lang="C++" style="width: 716px;">// --- WndProc (HookingRawInputDemo.cpp) ---
+// Message from Hooking DLL
+case WM_HOOK:
+{
+	// ...
+	// Check the buffer if this Hook message is supposed to be blocked; return 1 if it is
+	BOOL blockThisHook = FALSE;
+	if (!decisionBuffer.empty ())
+	{
+		blockThisHook = decisionBuffer.front ();
+		decisionBuffer.pop_front ();
+	}
+	if (blockThisHook)
+	{
+		// ...
+		return 1;
+	}
+	// ...
+}</pre>
+
+<h3><a class="anchor" title="Chap5-2" name="Chap5-2" id="Chap5-2">Waiting for the Raw Input message</a></h3>
+
+<p>So far we've assumed that the <code>Raw Input messages</code> always arrive before the <code>Hook messages</code>. Commonly they do, but there are occasions, where this is untrue, and the <code>Hook message</code> arrives first, like:</p>
+
+<pre lang="text" style="width: 716px;">Raw Input: 4A (0)
+Hook: 4A (0)
+Hook: 48 (0)
+Raw Input: 48 (0)</pre>
+
+<p>This would mean, that we would want to pop a&nbsp;decision from our buffer when there is none left. When this happens, we have to wait until we receive our delayed <code>Raw Input message</code>. After we get the message, we can decide on the spot whether to block the input or not.</p>
+
+<pre lang="C++" style="width: 716px;">// --- WndProc (HookingRawInputDemo.cpp) ---
+// Message from Hooking DLL
+case WM_HOOK:
+{
+	// ...
+	// Check the buffer if this Hook message is supposed to be blocked; return 1 if it is
+	BOOL blockThisHook = FALSE;
+	if (!decisionBuffer.empty ())
+	{
+		// ...
+	}
+	// The decision buffer is empty
+	else
+	{
+		MSG rawMessage;
+
+		// Waiting for the next Raw Input message
+		while (!PeekMessage (&rawMessage, mainHwnd, WM_INPUT, WM_INPUT, PM_REMOVE))
+		{
+		}
+
+		// The Raw Input message has arrived; decide whether to block the input
+		// ...
+	}
+	// ...
+}</pre>
+
+<h3><a class="anchor" title="Chap5-3" name="Chap5-3" id="Chap5-3">Hook message is missing</a></h3>
+
+<p>We have somehow dealt with the mixed up sequence of the messages, but you might already wondered, &quot;Is it possible for some message to not arrive at all? And if so, what happens?&quot;. Indeed it is possible. Let's take a&nbsp;look what happens when we lose some <code>Hook message</code>, i.e. we get <code>Raw Input message</code> for some event, but no <code>Hook message</code> for it. This happens to me for example when I&nbsp;use &quot;<strong>Ctrl</strong>&quot;&nbsp;+&nbsp;&quot;<strong>Esc</strong>&quot; shortcut. Messages for this sequence come as:</p>
+
+<pre lang="text" style="width: 716px;">Raw Input: 11 (1)
+Hook: 11 (1)
+Raw Input: 1B (0)
+Raw Input: 11 (0)</pre>
+
+<p>As you can see, Windows neglect to deliver couple of messages to us. Specifically both <code>Raw Input</code> and <code>Hook events</code> for key press of &quot;<strong>Esc</strong>&quot; key (<strong>1B</strong>), and <code>Hook events</code> for &quot;<strong>Esc</strong>&quot; (<strong>1B</strong>) and &quot;<strong>Ctrl</strong>&quot; (<strong>11</strong>) key releases. This could cause us some trouble, if we would just push the decisions for these strokes into the buffer, we would use them incorrectly later on. This problem can be solved (sort of) by enhancing our decision buffer. We won't be remembering only the decision itself, but also the virtual key code of the key it belongs to (you might even include whether the key is being pressed for more robust solution). This way, when <code>Hook message</code> arrives, and we are looking for the decision what to do with it, we will not simply pop the first decision, but we will check if its virtual key code matches. If it doesn't, we will look through the whole buffer for the correct one. I&nbsp;mentioned that this solves the problem only &quot;sort of&quot;. Even with this virtual key code checking, the potential danger is that there could be some button pushed twice, each time on a&nbsp;different keyboard. If the <code>Hook message</code> for the first keystroke doesn't arrive, we would incorrectly evaluate the second keystroke (based on the decision made for the first one). Unfortunately, I&nbsp;wasn't able to think of any reasonable solution to this. If you happen to know one, I&nbsp;would much appreciate if you would share it with the rest of us in the comments section, or you could send me an e-mail. This is definitely one of the things to look out for when using this APIs combination.</p>
+
+<pre lang="C++" style="width: 716px;">// --- (HookingRawInputDemo.h) ---
+struct DecisionRecord
+{
+	USHORT virtualKeyCode;
+	BOOL decision;
+
+	DecisionRecord (USHORT _virtualKeyCode, BOOL _decision) : virtualKeyCode (_virtualKeyCode),
+	                decision (_decision) {}
+};</pre>
+
+<pre lang="C++" style="width: 716px;">// --- WndProc (HookingRawInputDemo.cpp) ---
+// Message from Hooking DLL
+case WM_HOOK:
+{
+	// ...
+	// Check the buffer if this Hook message is supposed to be blocked; return 1 if it is
+	BOOL blockThisHook = FALSE;
+	BOOL recordFound = FALSE;
+	UINT index = 1;
+	if (!decisionBuffer.empty ())
+	{
+		// Search the buffer for the matching record
+		std::deque<DecisionRecord>::iterator iterator = decisionBuffer.begin ();
+		while (iterator != decisionBuffer.end ())
+		{
+			if (iterator->virtualKeyCode == virtualKeyCode)
+			{
+				blockThisHook = iterator->decision;
+				recordFound = TRUE;
+				// Remove this and all preceding messages from the buffer
+				for (int i = 0; i < index; ++i)
+				{
+					decisionBuffer.pop_front ();
+				}
+				// Stop looking
+				break;
+			}
+			++iterator;
+			++index;
+		}
+	}
+	// ...
+}</pre>
+
+<p>Notice here, that when we pop the decision, we don't pop only the matching decision we found, but also all decisions older than the current one. Assuming nothing else went wrong, these decisions are those that have no matching <code>Hook message</code>. This is useful to keep the buffer from growing unnecessarily big. But there are certainly more ways how you can keep it under control as you see fit.</p>
+
+<h3><a class="anchor" title="Chap5-4" name="Chap5-4" id="Chap5-4">Raw Input message is missing</a></h3>
+
+<p>When we were dealing with the situation where a&nbsp;<code>Hook message</code> comes before its <code>Raw Input message</code>, you might have got a&nbsp;little worried about that potentially infinite while loop we introduced. You really should be worried, actually. We already noticed, that not all messages will always be delivered. We walked through what can happen when a&nbsp;<code>Hook message</code> is lost. Now let's take a&nbsp;look what happens when a&nbsp;<code>Raw Input message</code> isn't delivered properly. Because there are real scenarios where this occurs. For example &quot;<strong>AltGr</strong>&quot; key gives me these messages (you might not encounter this, because this behaviour is locale specific):</p>
+
+<pre lang="text" style="width: 716px;">Raw Input: 12 (1)
+Hook: 11 (1)
+Hook: 12 (1)
+Raw Input: 12 (0)
+Hook: 11 (0)
+Hook: 12 (0)</pre>
+
+<p>Windows deliver <code>Hook messages</code> &quot;<strong>Ctrl</strong>&quot; (<strong>11</strong>)&nbsp;+ &quot;<strong>Alt</strong>&quot; (<strong>12</strong>) for a&nbsp;single &quot;<strong>AltGr</strong>&quot; press (&quot;<strong>Ctrl</strong>&quot;&nbsp;+&nbsp;&quot;<strong>Alt</strong>&quot; is common substitute for &quot;<strong>AltGr</strong>&quot;). The problem is, it delivers <code>Raw Input message</code> for only &quot;<strong>AltGr</strong>&quot; (<strong>12</strong>) itself (&quot;<strong>AltGr</strong>&quot; is identical to &quot;<strong>Alt</strong>&quot; for this purpose; it has even the same scan code, as far as I&nbsp;know). Employing our Raw Input waiting loop can cause some serious issues now, because it might never get the <code>Raw Input message</code> it is waiting for. We have to make some constraint on the loop.</p>
+
+<pre lang="C++" style="width: 716px;">// --- WndProc (HookingRawInputDemo.cpp) ---
+// Message from Hooking DLL
+case WM_HOOK:
+{
+	// ...
+	// Wait for the matching Raw Input message if the decision buffer was empty or the matching
+	// record wasn't there
+	DWORD currentTime, startTime;
+	startTime = GetTickCount ();
+	while (!recordFound)
+	{
+		MSG rawMessage;
+		while (!PeekMessage (&rawMessage, mainHwnd, WM_INPUT, WM_INPUT, PM_REMOVE))
+		{
+			// Test for the maxWaitingTime
+			currentTime = GetTickCount ();
+			// If current time is less than start, the time rolled over to 0
+			if ((currentTime < startTime ? ULONG_MAX - startTime + currentTime :
+			     currentTime - startTime) > maxWaitingTime)
+			{
+				// Ignore the Hook message, if it exceeded the limit
+				WCHAR text[128];
+				swprintf_s (text, 128, L"Hook TIMED OUT: %X (%d)\n", virtualKeyCode,
+				            keyPressed);
+				OutputDebugString (text);
+				return 0;
+			}
+		}
+		// ...
+	}
+	// ...
+}</pre>
+
+<p>Even though the loop can't go infinite now, I&nbsp;believe this (the missing or delayed <code>Raw Input message</code>) is one of the biggest problems of the whole concept. Because any waiting for the <code>Raw Input message</code> introduces a&nbsp;delay of the keyboard input. Therefore the waiting limit should be really low, so the users won't notice any lag. It might be even worth considering using a&nbsp;finer timer, I&nbsp;used the most simple one for the demonstration purposes.</p>
+
+<h2><a class="anchor" title="Chap6" name="Chap6" id="Chap6">Yet more oddities</a></h2>
+
+<p>I&nbsp;think, that what we have now is a&nbsp;reasonable core for an application that combines Raw Input and keyboard Hooking. The demo project provided matches what we went through so far. Now I&nbsp;would like to tell you more about some peculiar behaviour you might encounter when you deal with these APIs. It will be mostly things that causes one of the problems we covered earlier, with focus on missing <code>Raw Input messages</code>. I&nbsp;believe it deserves the attention, because as I&nbsp;mentioned, the missing <code>Raw Input message</code> can cause keyboard input lag, which is very undesirable. I&nbsp;will show you all of the problematic situations I&nbsp;know of, and propose some approach how to avoid, or at least minimize, the danger it might represent. But I&nbsp;won't include these advanced adjustments in the demo project, because I&nbsp;wanted to keep some balance between clarity and completeness, and I&nbsp;decided this will be the line. I&nbsp;also believe, that since you made it this far, you are capable of implementing the discussed approaches on your own, or even devise better ones, which the rest of us would gladly read in the comment section. But if you are interested in any of these techniques and can't figure it out yourself, please feel free to ask in the comment section about the details, or sample code, and I&nbsp;will try to help you out. I&nbsp;will also include a&nbsp;link to my shortcut managing application (with sources) once I&nbsp;finish it, where all of these additional measures are covered.</p>
+
+<h3><a class="anchor" title="Chap6-1" name="Chap6-1" id="Chap6-1">&quot;AltGr&quot; problem</a></h3>
+
+<p>Let's begin with something we've already stumbled upon. The inconvenience when Windows produce &quot;<strong>Ctrl</strong>&quot;&nbsp;+&nbsp;&quot;<strong>Alt</strong>&quot; <code>Hook messages</code>, but only &quot;<strong>Alt</strong>&quot; <code>Raw Input message</code>. You can go back and take a&nbsp;look at the sequence of messages we are getting in this case.</p>
+
+<p>Usually the &quot;<strong>Alt</strong>&quot; <code>Raw Input message</code> arrives correctly, so we can examine the <code>Raw Input message</code> and get one additional detail from its flags. The said detail is whether the &quot;<strong>Alt</strong>&quot; key was the right version of the key, i.e. the one, that can in fact be &quot;<strong>AltGr</strong>&quot;. If it is, we will push into our decision buffer not only the decision for the &quot;<strong>Alt</strong>&quot; key, but first also a&nbsp;fake decision for the &quot;<strong>Ctrl</strong>&quot; key. That way, the incoming &quot;<strong>Ctrl</strong>&quot; key <code>Hook message</code> will be able to find a&nbsp;matching record in the buffer and won't delay the input. As I&nbsp;mentioned earlier, this behaviour only occurs within some locale, so you can employ this workaround just for specific locales using the <code>GetKeyboardLayout</code> function.</p>
+
+<h3><a class="anchor" title="Chap6-2" name="Chap6-2" id="Chap6-2">Senseless Hook messages</a></h3>
+
+<p>Speaking of locale dependent problems, within some locales you might get really odd behaviour. For example, you might get this message sequence for a&nbsp;single &quot;<strong>Win</strong>&quot; key stroke (for me on Czech QWERTZ keyboard layout):</p>
+
+<pre lang="text" style="width: 716px;">Raw Input: 5C (1)
+Hook: 5C (1)
+Raw Input: 5C (0)
+Hook: 5C (0)
+Hook TIMED OUT: 11 (0)</pre>
+
+<p>You might be wondering what is that &quot;<strong>Ctrl</strong>&quot; <code>Hook message</code> doing there, at least I&nbsp;am. Even more so, when you inspect the details of the message. It turns out, that the &quot;<strong>Ctrl</strong>&quot; <code>Hook message</code> has its flags set to indicate that the key is being released and that the key was up prior to the event (according to the <code>Previous Key-State Flag</code>). In other words, the &quot;<strong>Ctrl</strong>&quot; key is being released when it was released already. This can happen with various keys (not just the &quot;<strong>Win</strong>&quot; key) on the keyboard, but as far as I&nbsp;know, the improper <code>Hook message</code> is always the &quot;<strong>Ctrl</strong>&quot; being released while already up. Since I've never encountered a&nbsp;situation, where this flags setting occurs with the proper &quot;<strong>Ctrl</strong>&quot; key press (I've noticed them with regular keystrokes of some special keys), I&nbsp;believe you can monitor your <code>Hook messages</code> for this pattern and don't wait for a&nbsp;<code>Raw Input message</code>, should such message arrive.</p>
+
+<h3><a class="anchor" title="Chap6-3" name="Chap6-3" id="Chap6-3">Multiplied Hook messages</a></h3>
+
+<p>There are situations where Windows will generate multiple keyboard <code>Hook messages</code> for a&nbsp;single keyboard event, and only one <code>Raw Input message</code>. Every multiplied <code>Hook message</code> will try to wait for its <code>Raw Input message</code> (that won't ever come), which will cause a&nbsp;delay. It often happens when an application enters a&nbsp;menu (be it either menu bar or context menu), or some applications can induce this behaviour more unpredictably. For example Firefox does this when I&nbsp;type too fast. The sequence of the messages can look like this:</p>
+
+<pre lang="text" style="width: 716px;">Hook: 27 (1)
+Raw Input WAITING: 27 (1)
+Hook: 27 (1)
+Raw Input WAITING: 27 (0)
+Hook: 27 (0)
+Hook TIMED OUT: 27 (0)
+Hook: 27 (0)
+Hook TIMED OUT: 27 (0)</pre>
+
+<p>As you can see, Windows delivered two <code>Hook messages</code> for every <code>Raw Input message</code>, but that's not a&nbsp;rule, there can be three or even more <code>Hook messages</code> for every single <code>Raw Input message</code>. I&nbsp;currently approach the issue with the following idea.</p>
+
+<p>The basis is to remember what was the last <code>Hook message</code> the application received. When new <code>Hook message</code> arrives, we can check whether it is identical message to the previous one (virtual key code and whether the key is being pressed match). If it is, we won't wait for the <code>Raw Input message</code>. But we should still check the decision buffer if there is a&nbsp;matching <code>Raw Input message</code>. Because for example when some key is being held, there will be a&nbsp;meaningful sequence of same <code>Hook messages</code> with matching <code>Raw Input messages</code>, and we shouldn't disregard those.</p>
+
+<p>One thing to keep in mind with this approach is that you should apply the same decision (whether to block the input with the Hook) to every repetitive <code>Hook message</code>. Say you would let the first Hook event through and block all the identical following events, thinking that the first one should be enough for the active window to process the input (for example keystroke in the menu bar). As it turns out, it's not. The application won't carry out the keystroke if you won't pass the following events as well as the first one.</p>
+
+<p>If you want to be more selective when to use this approach, you can check whether the application is currently in the menu mode using the <code>GetGUIThreadInfo</code> function. Although I&nbsp;would recommend using it all the time, just because there are applications, that can cause this behaviour even while not being in menu mode.</p>
+
+<h3><a class="anchor" title="Chap6-4" name="Chap6-4" id="Chap6-4">Keys for system shortcuts</a></h3>
+
+<p>So far, we've used a&nbsp;standard keyboard Hook (<code>WH_KEYBOARD</code>) to block the original input when we wanted. There is one limitation of this setup. There are some keys that are handled by the system regardless of the standard Hook blocking them. For example shortcuts like &quot;<strong>Win</strong>&quot;&nbsp;+&nbsp;&quot;<strong>d</strong>&quot;, &quot;<strong>Alt</strong>&quot;&nbsp;+&nbsp;&quot;<strong>Tab</strong>&quot, or even some single special keys like &quot;<strong>Calculator</strong>&quot; button (<strong>B7</strong> for my keyboard). Even if you stop propagation of the <code>Hook message</code>, Windows will launch the Calculator when you press it.</p>
+
+<p>If you want to be able to block such key events, you will have to incorporate the Low Level keyboard Hook (<code>WH_KEYBOARD_LL</code>). When we were setting things up, we figured out that it's not possible to combine Low Level Hook and Raw Input API, so there is no way (I&nbsp;believe there isn't, if you know any, please let me know in the comments section or via the e-mail) how to block these special keys and still be able to identify the keyboard which was used. But at least they can be used side by side, so you can have standard Hook with Raw Input handling most of the events, and the Low Level Hook handling these special keys, which won't be distinguishable by keyboard identification.</p>
+
+<p>One last thing that I&nbsp;stumbled upon is the &quot;<strong>Num Lock</strong>&quot; key (I&nbsp;didn't notice it with the other locking keys). Even if I&nbsp;block this key with the Low Level Hook, it will still affect the keyboard state, as the normal &quot;<strong>Num Lock</strong>&quot; keypress would (only it won't change the LED indicator on the keyboard). This can be circumvented by checking the keyboard state when &quot;<strong>Num Lock</strong>&quot; key is being released (in standard keyboard Hook), and if need be synthesize a&nbsp;fake &quot;<strong>Num Lock</strong>&quot; key press that will switch the keyboard to previous state.</p>
+
+<h2><a class="anchor" title="Chap7" name="Chap7" id="Chap7">Conclusion</a></h2>
+
+<p>I&nbsp;hope this article helped you understand how to combine the Raw Input and keyboard Hooking APIs.</p>
+
+<p>If I&nbsp;should summarize my thoughts about the whole approach, I&nbsp;find it quite useful. It is capable of solving the problem, even though there is a&nbsp;couple of unresolved issues. Since Windows API doesn't provide an easier way how to approach the problem, I&nbsp;think the issues are reasonably manageable. But if you need to implement 100% robust solution, you will probably have to use a&nbsp;custom driver approach.</p>
+
+<p>If you have some thoughts, questions, or anything else to add, please feel free to share them in the comment section.</p>
+
+<h2><a class="anchor" title="Chap8" name="Chap8" id="Chap8">History</a></h2>
+
+<ul>
+	<li>January 27, 2014: First version of the article posted.</li>
+</ul>
+
+<h2><a class="anchor" title="Chap9" name="Chap9" id="Chap9">References</a></h2>
+
+<ul>
+	<li><a class="anchor" title="Ref1" name="Ref1" id="Ref1">[1]</a> &quot;About Messages and Message Queues&quot;. Microsoft. <a title="http://msdn.microsoft.com/en-us/library/windows/desktop/ms644927.aspx" href="http://msdn.microsoft.com/en-us/library/windows/desktop/ms644927.aspx">http://msdn.microsoft.com/en-us/library/windows/desktop/ms644927.aspx</a> (accessed January 26, 2014).</li>
+	
+	<li><a class="anchor" title="Ref2" name="Ref2" id="Ref2">[2]</a> &quot;About Raw Input&quot;. Microsoft. <a title="http://msdn.microsoft.com/en-us/library/windows/desktop/ms645543.aspx" href="http://msdn.microsoft.com/en-us/library/windows/desktop/ms645543.aspx">http://msdn.microsoft.com/en-us/library/windows/desktop/ms645543.aspx</a> (accessed January 26, 2014).</li>
+	
+	<li><a class="anchor" title="Ref3" name="Ref3" id="Ref3">[3]</a> &quot;Hooks Overview&quot;. Microsoft. <a title="http://msdn.microsoft.com/en-us/library/windows/desktop/ms644959.aspx" href="http://msdn.microsoft.com/en-us/library/windows/desktop/ms644959.aspx">http://msdn.microsoft.com/en-us/library/windows/desktop/ms644959.aspx</a> (accessed January 26, 2014).</li>
+	
+	<li><a class="anchor" title="Ref4" name="Ref4" id="Ref4">[4]</a> Medek, Petr. &quot;HID macros&quot;. <a title="http://www.hidmacros.eu/" href="http://www.hidmacros.eu/">http://www.hidmacros.eu/</a> (accessed January 26, 2014).</li>
+	
+	<li><a class="anchor" title="Ref5" name="Ref5" id="Ref5">[5]</a> Newcomer, Joseph M. &quot;Hooks and DLLs&quot;. <a title="http://www.codeproject.com/Articles/1037/Hooks-and-DLLs" href="http://www.codeproject.com/Articles/1037/Hooks-and-DLLs">http://www.codeproject.com/Articles/1037/Hooks-and-DLLs</a> (accessed January 27, 2014).</li>
+	
+	<li><a class="anchor" title="Ref6" name="Ref6" id="Ref6">[6]</a> Roderick, Adam J. &quot;Mouse and KeyBoard Hooking utility with VC++&quot;. <a title="http://www.codeproject.com/Articles/67091/Mouse-and-KeyBoard-Hooking-utility-with-VC" href="http://www.codeproject.com/Articles/67091/Mouse-and-KeyBoard-Hooking-utility-with-VC">http://www.codeproject.com/Articles/67091/Mouse-and-KeyBoard-Hooking-utility-with-VC</a> (accessed January 27, 2014).</li>
+</ul>
+
+</body>
+
+</html>
